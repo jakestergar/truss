@@ -89,7 +89,7 @@ def instance(
     )
 
 
-def checkpoint(checkpoint_type="lora", checkpoint_id="cp", base_model="org/model"):
+def checkpoint(checkpoint_type="lora", checkpoint_id="cp"):
     if checkpoint_type == "full":
         return FullCheckpoint(training_job_id="job", checkpoint_name=checkpoint_id)
     if checkpoint_type == "whisper":
@@ -98,6 +98,7 @@ def checkpoint(checkpoint_type="lora", checkpoint_id="cp", base_model="org/model
 
 
 def test_build_request_and_result_parsing(remote):
+    # CheckpointList validation intentionally rejects mixing both checkpoint sources.
     config = DeployCheckpointsConfigComplete.model_construct(
         checkpoint_details=CheckpointList.model_construct(
             download_folder="/tmp/training_checkpoints",
@@ -270,14 +271,17 @@ def test_get_instance_type_id_errors(remote):
         ("Llama-3.1-8B-Instruct", "Llama-3.1-8B-Instruct"),
     ],
 )
-def test_model_name_helpers(ref, expected):
+def test_model_name_from_checkpoint_model_ref(ref, expected):
     assert _model_name_from_checkpoint_model_ref(ref) == expected
+
+
+def test_validate_and_get_model_name():
     _validate_base_model_id("org/model", ModelWeightsFormat.LORA)
     with patch(
         "truss.cli.train.deploy_checkpoints.deploy_checkpoints.inquirer.text",
-        return_value=prompt(expected),
+        return_value=prompt("model"),
     ):
-        assert _get_model_name(ModelWeightsFormat.LORA, "org/model") == expected
+        assert _get_model_name(ModelWeightsFormat.LORA, "org/model") == "model"
     with pytest.raises(ValueError, match="Unable to infer base model"):
         _validate_base_model_id(None, ModelWeightsFormat.LORA)
 
@@ -342,6 +346,48 @@ def test_hydrate_deploy_config_training_and_loops(remote):
         )
     assert result.checkpoint_details.loops_checkpoint_ids == ["pk"]
     assert result.model_name == "loop-model"
+
+    with patch(
+        "truss.cli.train.deploy_checkpoints.deploy_checkpoints.inquirer.text"
+    ) as text:
+        result = _hydrate_deploy_config(
+            DeployCheckpointsConfig(
+                model_name="configured-loops",
+                checkpoint_details=CheckpointList(loops_checkpoint_ids=["pk"]),
+                runtime=DeployCheckpointsRuntime(environment_variables={"X": "y"}),
+            ),
+            remote,
+            None,
+            None,
+            None,
+            is_loops_command=True,
+        )
+    assert result.model_name == "configured-loops"
+    text.assert_not_called()
+
+    remote.api.search_training_jobs.return_value = [
+        {"id": "job", "training_project": {"id": "project"}}
+    ]
+    with patch(
+        "truss.cli.train.deploy_checkpoints.deploy_checkpoints.inquirer.text"
+    ) as text:
+        result = _hydrate_deploy_config(
+            DeployCheckpointsConfig(
+                model_name="configured-training",
+                checkpoint_details=CheckpointList(
+                    checkpoints=[
+                        LoRACheckpoint(training_job_id="job", checkpoint_name="a")
+                    ]
+                ),
+                runtime=DeployCheckpointsRuntime(environment_variables={"X": "y"}),
+            ),
+            remote,
+            None,
+            None,
+            None,
+        )
+    assert result.model_name == "configured-training"
+    text.assert_not_called()
 
 
 def test_hydrate_deploy_config_rejects_flags_and_mismatches(remote):
@@ -435,6 +481,10 @@ def test_hydrate_checkpoints_latest_and_unsupported():
     )
     result = _hydrate_checkpoints("job", "latest", response)
     assert result.checkpoint_name == "last"
+    assert isinstance(
+        hydrate_checkpoint("job", "whisper", {"checkpoint_type": "whisper"}, "whisper"),
+        WhisperCheckpoint,
+    )
     with pytest.raises(ValueError, match="Unsupported checkpoint type"):
         hydrate_checkpoint("job", "x", {"checkpoint_type": "other"}, "other")
 
@@ -469,6 +519,7 @@ def test_compute_and_accelerator_paths(remote):
         (None, {"base_model": "org/model"}, "org/model"),
         (None, {"checkpoint_type": "full"}, None),
         (None, {"checkpoint_type": "whisper"}, None),
+        (None, {"checkpoint_type": "lora"}, "prompted"),
     ],
 )
 def test_get_base_model_id(user_input, data, expected):
@@ -477,15 +528,17 @@ def test_get_base_model_id(user_input, data, expected):
         return_value=prompt("prompted"),
     ):
         assert _get_base_model_id(user_input, data) == expected
-    if user_input is None and not data:
-        with (
-            patch(
-                "truss.cli.train.deploy_checkpoints.deploy_checkpoints.inquirer.text",
-                return_value=prompt(""),
-            ),
-            pytest.raises(click.UsageError, match="Base model id is required"),
-        ):
-            _get_base_model_id(None, data)
+
+
+def test_get_base_model_id_empty_prompt():
+    with (
+        patch(
+            "truss.cli.train.deploy_checkpoints.deploy_checkpoints.inquirer.text",
+            return_value=prompt(""),
+        ),
+        pytest.raises(click.UsageError, match="Base model id is required"),
+    ):
+        _get_base_model_id(None, {"checkpoint_type": "lora"})
 
 
 def test_runtime_config_and_hf_secret():
@@ -544,3 +597,15 @@ def test_ensure_checkpoint_details_prompt(remote):
     ):
         result = _ensure_checkpoint_details(remote, None, None, "job")
     assert result.checkpoints[0].model_weight_format == ModelWeightsFormat.FULL
+
+
+def test_ensure_checkpoint_details_processes_configured_checkpoints(remote):
+    details = CheckpointList(
+        checkpoints=[LoRACheckpoint(training_job_id="job", checkpoint_name="a")]
+    )
+    with patch(
+        "truss.cli.train.deploy_checkpoints.deploy_checkpoints._process_user_provided_checkpoints",
+        return_value=details,
+    ) as process:
+        assert _ensure_checkpoint_details(remote, details, None, None) is details
+    process.assert_called_once_with(details, remote)
