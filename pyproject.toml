@@ -70,7 +70,9 @@ truss-docker-build-setup = "truss.contexts.docker_build_setup:docker_build_setup
 [dependency-groups]
 dev = [
     "ruff>=0.9.0,<0.10",
-    "coverage>=6.4.1,<7",
+    # >=7 required: 6.x `combine` drops data when several measured paths map to
+    # the same file via `[tool.coverage.paths]` (see that section below).
+    "coverage>=7.6.0,<8",
     "httpx[cli]",
     "ipdb>=0.13.9,<0.14",
     "ipykernel>=6.16.0,<7",
@@ -152,6 +154,16 @@ markers = [
 addopts = "--ignore=smoketests --ignore=baseten-performance-client --ignore=integration_tests --basetemp=/tmp/pytest-temp"
 # NB(nikhil): Ensures our relative imports work for tests, given non-traditional directory structure.
 pythonpath = [".", "truss-chains", "truss-train"]
+
+[tool.coverage.run]
+# The server template tests build a container filesystem in a pytest tmpdir and
+# import the copied modules as top-level modules (`model_wrapper`, `truss_server`,
+# `_truss_common.*`). Measuring them by module name picks up those copies wherever
+# they live, `[tool.coverage.paths]` below maps them back onto the repo sources.
+source_pkgs = ["model_wrapper", "truss_server", "_truss_common"]
+
+[tool.coverage.paths]
+server_templates = ["truss/templates/server/", "*/truss_fs/app/"]
 
 [tool.ruff]
 src = [".", "truss-chains", "truss-train"]
