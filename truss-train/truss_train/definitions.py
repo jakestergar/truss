@@ -3,7 +3,7 @@ from abc import ABC
 from typing import Dict, List, Literal, Optional, Union
 
 import pydantic
-from pydantic import ValidationError, model_validator
+from pydantic import model_validator
 
 from truss.base import constants, custom_types, truss_config
 
@@ -97,7 +97,7 @@ class BasetenCheckpoint:
         project_name: Optional[str] = None, job_id: Optional[str] = None
     ) -> _BasetenLatestCheckpoint:
         if not job_id and not project_name:
-            raise ValidationError("job_id or project_name is required")
+            raise ValueError("job_id or project_name is required")
         return _BasetenLatestCheckpoint(project_name=project_name, job_id=job_id)
 
     @classmethod

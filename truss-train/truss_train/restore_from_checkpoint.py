@@ -11,7 +11,9 @@ from truss_train import (
 
 load_checkpoint_config = LoadCheckpointConfig(enabled=True)
 
-load_from_most_recent_checkpoint = BasetenCheckpoint.from_latest_checkpoint()
+load_from_most_recent_checkpoint = BasetenCheckpoint.from_latest_checkpoint(
+    project_name="first-project"
+)
 
 load_most_recent_checkpoint = BasetenCheckpoint.from_latest_checkpoint(
     job_id="lqz4pw4",  # Optional
