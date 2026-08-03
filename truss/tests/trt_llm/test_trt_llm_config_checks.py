@@ -66,13 +66,8 @@ def test_tag_check_skips_non_briton_models(truss):
 
 def test_tag_check_adds_openai_tag_for_speculator():
     truss = make_truss(speculator="draft", tags=[])
-    truss.spec.config.write_to_yaml_file = Mock()
-    with patch.object(
-        truss.spec.config,
-        "write_to_yaml_file",
-        wraps=truss.spec.config.write_to_yaml_file,
-    ) as write:
-        message, is_error = has_no_tags_trt_llm_builder(truss)
+    write = truss.spec.config.write_to_yaml_file = Mock()
+    message, is_error = has_no_tags_trt_llm_builder(truss)
     assert not is_error
     assert OPENAI_COMPATIBLE_TAG in truss.spec.config.model_metadata["tags"]
     assert "openai-compatible tag" in message
@@ -109,13 +104,8 @@ def test_tag_check_handles_existing_tags(tags):
 
 def test_memory_check_updates_small_request():
     truss = make_truss(memory_in_bytes=1)
-    truss.spec.config.write_to_yaml_file = Mock()
-    with patch.object(
-        truss.spec.config,
-        "write_to_yaml_file",
-        wraps=truss.spec.config.write_to_yaml_file,
-    ) as write:
-        assert memory_updated_for_trt_llm_builder(truss)
+    write = truss.spec.config.write_to_yaml_file = Mock()
+    assert memory_updated_for_trt_llm_builder(truss)
     assert truss.spec.config.resources.memory == f"{TRTLLM_MIN_MEMORY_REQUEST_GI}Gi"
     write.assert_called_once_with("/tmp/config.yaml", verbose=False)
 

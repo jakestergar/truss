@@ -1,4 +1,5 @@
 import logging
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -81,6 +82,8 @@ def test_unknown_patch_body_raises_unsupported_patch(applier):
 
 
 def test_unknown_requirement_action_raises_value_error(applier):
-    body = PythonRequirementPatch(action=Mock(name="unknown"), requirement="pkg")
+    body = PythonRequirementPatch(
+        action=SimpleNamespace(value="INVALID"), requirement="pkg"
+    )
     with pytest.raises(ValueError, match="Unknown python requirement patch action"):
         applier._apply_python_requirement_patch(body)

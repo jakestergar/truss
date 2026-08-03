@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 import rich_click as click
@@ -102,7 +102,7 @@ def test_inquire_remote_name_noninteractive(
 
 
 def test_inquire_remote_name_creates_config_and_selects_multiple():
-    config = Mock(name="new")
+    config = SimpleNamespace(name="new")
     with (
         patch(
             "truss.cli.remote_cli.RemoteFactory.get_available_config_names",
@@ -112,7 +112,7 @@ def test_inquire_remote_name_creates_config_and_selects_multiple():
         patch("truss.cli.remote_cli.inquire_remote_config", return_value=config),
         patch("truss.cli.remote_cli.RemoteFactory.update_remote_config") as update,
     ):
-        assert inquire_remote_name() == config.name
+        assert inquire_remote_name() == "new"
     update.assert_called_once_with(config)
 
     with (
