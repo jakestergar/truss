@@ -76,9 +76,9 @@ def test_client_error_can_suppress_message(client, capsys):
 
 
 def test_client_error_with_invalid_json_and_non_client_error(client):
-    resp = response(status=500)
+    resp = response(status=400)
     resp.json.side_effect = ValueError
-    resp.raise_for_status.side_effect = RuntimeError("server")
+    resp.raise_for_status.side_effect = RuntimeError("bad response")
     with pytest.raises(RuntimeError):
         client._handle_error(resp)
     resp = response(status=200)

@@ -14,6 +14,7 @@ from truss.cli.remote_cli import (
     inquire_team,
 )
 from truss.remote.baseten.custom_types import TeamType
+from truss.remote.baseten.oauth import OAuthError
 from truss.remote.remote_factory import AuthType
 
 
@@ -61,6 +62,17 @@ def test_inquire_remote_config_oauth_and_error():
         select.return_value.execute.return_value = "api_key"
         secret.return_value.execute.return_value = "api-key"
         assert inquire_remote_config().configs["auth_type"] is AuthType.API_KEY
+
+    with (
+        patch("truss.cli.remote_cli.inquirer.select") as select,
+        patch(
+            "truss.cli.remote_cli.oauth.run_device_flow",
+            side_effect=OAuthError("expired"),
+        ),
+    ):
+        select.return_value.execute.return_value = "browser"
+        with pytest.raises(click.ClickException, match="expired"):
+            inquire_remote_config()
 
 
 @pytest.mark.parametrize(
