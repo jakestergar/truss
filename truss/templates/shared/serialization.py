@@ -58,6 +58,68 @@ def _truss_msgpack_encoder(
         return obj if chain is None else chain(obj)
 
 
+def _unpack_dtype(dtype: Any) -> Any:
+    import numpy as np
+
+    if isinstance(dtype, (list, tuple)):
+        dtype = [
+            (subdtype[0], _unpack_dtype(subdtype[1])) + tuple(subdtype[2:])
+            for subdtype in dtype
+        ]
+    return np.dtype(dtype)
+
+
+def _tostr(x: Any) -> str:
+    return x.decode() if isinstance(x, bytes) else str(x)
+
+
+def _numpy_decoder(obj: Any) -> Any:
+    """Pickle-free replacement for `msgpack_numpy.decode`.
+
+    `msgpack_numpy.decode` calls `pickle.loads` for object-dtype (`kind == b"O"`)
+    payloads, which is arbitrary code execution when the bytes are untrusted.
+    Object dtypes are rejected here instead.
+    """
+    import numpy as np
+
+    try:
+        if b"nd" in obj:
+            if obj[b"nd"] is True:
+                kind = obj.get(b"kind")
+                if kind == b"O":
+                    raise ValueError(
+                        "Deserializing object-dtype numpy arrays is not supported, "
+                        "because it requires unpickling untrusted data."
+                    )
+                if kind == b"V":
+                    descr = [
+                        tuple(_tostr(t) if isinstance(t, bytes) else t for t in d)
+                        for d in obj[b"type"]
+                    ]
+                else:
+                    descr = obj[b"type"]
+                dtype = _unpack_dtype(descr)
+            else:
+                dtype = _unpack_dtype(obj[b"type"])
+
+            if dtype.hasobject:
+                raise ValueError(
+                    "Deserializing object-dtype numpy arrays is not supported, "
+                    "because it requires unpickling untrusted data."
+                )
+            if obj[b"nd"] is True:
+                return np.ndarray(
+                    buffer=obj[b"data"], dtype=dtype, shape=tuple(obj[b"shape"])
+                )
+            return np.frombuffer(obj[b"data"], dtype=dtype)[0]
+        elif b"complex" in obj:
+            return complex(_tostr(obj[b"data"]))
+        else:
+            return obj
+    except KeyError:
+        return obj
+
+
 def _truss_msgpack_decoder(obj: Any, chain=None):
     try:
         if b"__dt_datetime_iso__" in obj:
@@ -94,21 +156,33 @@ def is_truss_serializable(obj: Any) -> bool:
         return False
 
 
+def _numpy_encoder(obj: Any) -> Any:
+    import msgpack_numpy as mp_np
+    import numpy as np
+
+    if isinstance(obj, np.ndarray) and obj.dtype.hasobject:
+        raise ValueError(
+            "Serializing object-dtype numpy arrays is not supported, because they "
+            "can only be represented as pickled data."
+        )
+    return mp_np.encode(obj)
+
+
 def truss_msgpack_serialize(obj: MsgPackType) -> bytes:
     import msgpack
-    import msgpack_numpy as mp_np
 
     return msgpack.packb(
-        obj, default=lambda x: _truss_msgpack_encoder(x, chain=mp_np.encode)
+        obj, default=lambda x: _truss_msgpack_encoder(x, chain=_numpy_encoder)
     )
 
 
 def truss_msgpack_deserialize(data: bytes) -> MsgPackType:
     import msgpack
-    import msgpack_numpy as mp_np
 
     return msgpack.unpackb(
-        data, object_hook=lambda x: _truss_msgpack_decoder(x, chain=mp_np.decode)
+        data,
+        object_hook=lambda x: _truss_msgpack_decoder(x, chain=_numpy_decoder),
+        strict_map_key=True,
     )
 
 
