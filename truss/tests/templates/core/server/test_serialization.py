@@ -13,7 +13,6 @@ from truss.templates.shared import serialization
     "value",
     [
         datetime(2024, 1, 2, 3, 4, 5, 678901),
-        datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
         date(2024, 1, 2),
         time(3, 4, 5),
         timedelta(days=1, seconds=2, microseconds=3),
@@ -43,6 +42,14 @@ def test_encoder_renders_utc_datetime_with_z_suffix():
     )
 
     assert encoded == {b"__dt_datetime_iso__": True, b"data": "2024-01-02T03:04:05Z"}
+
+
+def test_decoder_restores_timezone_aware_datetime():
+    decoded = serialization._truss_msgpack_decoder(
+        {b"__dt_datetime_iso__": True, b"data": "2024-01-02T03:04:05+00:00"}
+    )
+
+    assert decoded == datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 
 def test_encoder_rejects_timezone_aware_time():
