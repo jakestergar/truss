@@ -837,3 +837,50 @@ def test_deactivate_loops_run_posts_run_deactivate_endpoint(baseten_api):
     assert mock_rest_client.post.call_args[0][0] == "v1/loops/runs/run-1/deactivate"
     assert mock_rest_client.post.call_args[1]["body"] == {}
     mock_rest_client.get.assert_not_called()
+
+
+_S3_ERROR_BODY = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n'
+    b"<Error><Code>InternalError</Code>"
+    b"<Message>We encountered an internal error. Please try again.</Message>"
+    b"<RequestId>8F3A1C2D9E4B7A61</RequestId></Error>"
+)
+
+
+def _presigned_url_response(status_code: int, content: bytes) -> Response:
+    response = Response()
+    response.status_code = status_code
+    response.url = "https://s3.amazonaws.com/bucket/job-artifacts.tgz"
+    response._content = content
+    return response
+
+
+def test_get_from_presigned_url_raises_on_error_status(baseten_api):
+    # A 5xx from S3 returns an XML error body. Returning those bytes makes the
+    # caller write the error document to disk as a corrupt .tgz artifact.
+    error_response = _presigned_url_response(500, _S3_ERROR_BODY)
+
+    with mock.patch("requests.get", return_value=error_response):
+        with pytest.raises(requests.exceptions.HTTPError):
+            baseten_api.get_from_presigned_url(
+                "https://s3.amazonaws.com/bucket/job-artifacts.tgz"
+            )
+
+
+def test_get_from_presigned_url_retries_transient_connection_error(baseten_api):
+    # A transient connection drop mid-download should not fail the whole
+    # training job artifact download.
+    mock_get = mock.Mock(
+        side_effect=[
+            requests.exceptions.ConnectionError("connection reset by peer"),
+            _presigned_url_response(200, b"artifact-bytes"),
+        ]
+    )
+
+    with mock.patch("requests.get", mock_get), mock.patch("time.sleep"):
+        content = baseten_api.get_from_presigned_url(
+            "https://s3.amazonaws.com/bucket/job-artifacts.tgz"
+        )
+
+    assert content == b"artifact-bytes"
+    assert mock_get.call_count == 2
