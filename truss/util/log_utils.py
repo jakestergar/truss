@@ -3,7 +3,6 @@ import threading
 from typing import List, Optional
 
 
-# TODO: add test.
 class LogInterceptor(logging.Handler):
     """This context manager intercepts logs at root level and allows to retrieve them
     later. It uses the formatter of the first root handler (if present).
