@@ -6,6 +6,14 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import requests
 from pydantic import BaseModel, Field
+from tenacity import (
+    RetryError,
+    Retrying,
+    retry_if_exception_type,
+    retry_if_result,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from truss.base.custom_types import SafeModel
 from truss.remote.baseten import custom_types as b10_types
@@ -18,6 +26,19 @@ from truss.remote.baseten.utils.transfer import base64_encoded_json_str
 
 logger = logging.getLogger(__name__)
 PARAMS_INDENT = "\n                    "
+
+PRESIGNED_URL_DOWNLOAD_ATTEMPTS = 5
+PRESIGNED_URL_DOWNLOAD_TIMEOUT_SECS = (10, 300)
+_RETRYABLE_DOWNLOAD_STATUS_CODES = frozenset({500, 502, 503, 504})
+_RETRYABLE_DOWNLOAD_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.Timeout,
+)
+
+
+class PresignedUrlDownloadError(Exception):
+    pass
 
 
 class ChainAWSCredential(SafeModel):
@@ -1102,7 +1123,37 @@ class BasetenApi:
         return presigned_url
 
     def get_from_presigned_url(self, presigned_url: str) -> bytes:
-        response = requests.get(presigned_url)
+        retrying = Retrying(
+            stop=stop_after_attempt(PRESIGNED_URL_DOWNLOAD_ATTEMPTS),
+            wait=wait_exponential(multiplier=1, min=1, max=16),
+            retry=(
+                retry_if_result(
+                    lambda resp: resp.status_code in _RETRYABLE_DOWNLOAD_STATUS_CODES
+                )
+                | retry_if_exception_type(_RETRYABLE_DOWNLOAD_EXCEPTIONS)
+            ),
+        )
+        try:
+            response = retrying(
+                requests.get, presigned_url, timeout=PRESIGNED_URL_DOWNLOAD_TIMEOUT_SECS
+            )
+        except RetryError as e:
+            # Either the last attempt raised (re-raise it) or it returned a
+            # retryable error response (fall through to the status check).
+            response = e.last_attempt.result()
+        if not response.ok:
+            raise PresignedUrlDownloadError(
+                f"Artifact download failed with HTTP {response.status_code}: "
+                f"{response.text[:500]}"
+            )
+        expected_length = response.headers.get("Content-Length")
+        if expected_length is not None and int(expected_length) != len(
+            response.content
+        ):
+            raise PresignedUrlDownloadError(
+                f"Artifact download truncated: expected {expected_length} bytes, "
+                f"received {len(response.content)}."
+            )
         return response.content
 
     def get_deployment_download_url(self, model_id: str, deployment_id: str) -> str:
