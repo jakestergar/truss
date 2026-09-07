@@ -514,6 +514,12 @@ def download_training_job_data(
     )
     content = remote_provider.api.get_from_presigned_url(presigned_url)
 
+    if not content:
+        raise click.ClickException(
+            f"Downloaded artifact for job '{job_id}' in project '{project_name}' is "
+            f"empty (0 bytes). Source URL: {presigned_url}"
+        )
+
     if unzip:
         with tempfile.NamedTemporaryFile() as temp_file:
             temp_path = Path(temp_file.name)
@@ -528,8 +534,13 @@ def download_training_job_data(
                 )
 
             unzip_dir.mkdir(parents=True, exist_ok=True)
-            with tarfile.open(temp_path, "r:*") as tar:
-                tar.extractall(path=unzip_dir)
+            try:
+                with tarfile.open(temp_path, "r:*") as tar:
+                    tar.extractall(path=unzip_dir)
+            except tarfile.ReadError as e:
+                raise click.ClickException(
+                    f"Downloaded artifact for job '{job_id}' is not a valid tarball: {e}"
+                ) from e
 
             return unzip_dir
     else:

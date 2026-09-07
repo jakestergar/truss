@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 
 from truss.cli.train import core as train_cli
@@ -123,3 +124,49 @@ def test_download_training_job_different_directories(
     # Assert
     expected_path = full_path / "test_project_test_job_123.tgz"
     assert result.resolve() == expected_path.resolve()
+
+
+def test_download_training_job_empty_content(tmp_path, mock_remote, mock_job_response):
+    # Setup
+    mock_remote.api.search_training_jobs.return_value = mock_job_response
+    mock_remote.api.get_training_job_presigned_url.return_value = "https://test-url.com"
+    mock_remote.api.get_from_presigned_url.return_value = b""
+
+    # Execute and Assert
+    with pytest.raises(click.ClickException) as exc_info:
+        train_cli.download_training_job_data(
+            remote_provider=mock_remote,
+            job_id="test_job_123",
+            target_directory=str(tmp_path),
+            unzip=False,
+        )
+
+    message = str(exc_info.value)
+    assert "test_job_123" in message
+    assert "test_project" in message
+    assert "https://test-url.com" in message
+    assert not (tmp_path / "test_project_test_job_123.tgz").exists()
+
+
+def test_download_training_job_invalid_tarball(
+    tmp_path, mock_remote, mock_job_response
+):
+    # Setup
+    mock_remote.api.search_training_jobs.return_value = mock_job_response
+    mock_remote.api.get_training_job_presigned_url.return_value = "https://test-url.com"
+    mock_remote.api.get_from_presigned_url.return_value = (
+        b"<?xml version='1.0'?><Error><Code>AccessDenied</Code></Error>"
+    )
+
+    # Execute and Assert
+    with pytest.raises(click.ClickException) as exc_info:
+        train_cli.download_training_job_data(
+            remote_provider=mock_remote,
+            job_id="test_job_123",
+            target_directory=str(tmp_path),
+            unzip=True,
+        )
+
+    message = str(exc_info.value)
+    assert "test_job_123" in message
+    assert "not a valid tarball" in message
