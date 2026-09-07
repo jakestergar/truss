@@ -303,6 +303,163 @@ def test_acc_spec_from_str(input_str, expected_acc):
 
 
 @pytest.mark.parametrize(
+    "input_str, expected_acc",
+    [
+        (" A100 ", AcceleratorSpec(accelerator=Accelerator.A100, count=1)),
+        ("H100:8 ", AcceleratorSpec(accelerator=Accelerator.H100, count=8)),
+        ("\tL4:2\n", AcceleratorSpec(accelerator=Accelerator.L4, count=2)),
+        ("A100:01", AcceleratorSpec(accelerator=Accelerator.A100, count=1)),
+        ("T4:1", AcceleratorSpec(accelerator=Accelerator.T4, count=1)),
+        ("B10", AcceleratorSpec(accelerator=Accelerator._B10, count=1)),
+    ],
+)
+def test_acc_spec_from_str_whitespace_and_count_forms(input_str, expected_acc):
+    assert AcceleratorSpec.model_validate(input_str) == expected_acc
+
+
+@pytest.mark.parametrize(
+    "input_str, error_match",
+    [
+        ("", "Accelerator type cannot be empty"),
+        ("   ", "Accelerator type cannot be empty"),
+        (":2", "Accelerator type cannot be empty"),
+        ("a100", "Unsupported accelerator type: `a100`"),
+        ("RTX4090", "Unsupported accelerator type: `RTX4090`"),
+        ("A100_80GB", "Unsupported accelerator type: `A100_80GB`"),
+        ("A100 :2", "Unsupported accelerator type: `A100 `"),
+        ("A100:", "Invalid count: ''"),
+        ("A100:0", "Invalid count: '0'"),
+        ("A100:-1", "Invalid count: '-1'"),
+        ("A100:1.5", "Invalid count: '1.5'"),
+        ("A100: 2", "Invalid count: ' 2'"),
+        ("A100:two", "Invalid count: 'two'"),
+        ("A100:1_0", "Invalid count: '1_0'"),
+        ("A100:2x", "Invalid count: '2x'"),
+    ],
+)
+def test_acc_spec_from_str_invalid(input_str, error_match):
+    with pytest.raises(pydantic.ValidationError, match=error_match):
+        AcceleratorSpec.model_validate(input_str)
+
+
+def test_acc_spec_unsupported_type_error_lists_available_types():
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        AcceleratorSpec.model_validate("RTX4090")
+    message = str(exc_info.value)
+    assert "Available types:" in message
+    for acc in Accelerator:
+        assert acc.value in message
+
+
+@pytest.mark.parametrize(
+    "input_value, expected_acc",
+    [
+        (None, AcceleratorSpec(accelerator=None, count=1)),
+        ({}, AcceleratorSpec(accelerator=None, count=1)),
+        (
+            {"accelerator": "A100"},
+            AcceleratorSpec(accelerator=Accelerator.A100, count=1),
+        ),
+        (
+            {"accelerator": Accelerator.A100, "count": 4},
+            AcceleratorSpec(accelerator=Accelerator.A100, count=4),
+        ),
+        (
+            {"accelerator": "H100", "count": "2"},
+            AcceleratorSpec(accelerator=Accelerator.H100, count=2),
+        ),
+        (
+            AcceleratorSpec(accelerator=Accelerator.T4, count=3),
+            AcceleratorSpec(accelerator=Accelerator.T4, count=3),
+        ),
+    ],
+)
+def test_acc_spec_from_non_str(input_value, expected_acc):
+    assert AcceleratorSpec.model_validate(input_value) == expected_acc
+
+
+@pytest.mark.parametrize(
+    "input_value, error_match",
+    [
+        ({"accelerator": "A100:2"}, "Input should be 'B10', 'T4'"),
+        ({"accelerator": "a100"}, "Input should be 'B10', 'T4'"),
+        ({"accelerator": "A100", "count": -1}, "greater than or equal to 0"),
+        ({"accelerator": "A100", "count": 1.5}, "count"),
+        ({"accelerator": "A100", "count": "two"}, "count"),
+    ],
+)
+def test_acc_spec_from_dict_invalid(input_value, error_match):
+    with pytest.raises(pydantic.ValidationError, match=error_match):
+        AcceleratorSpec.model_validate(input_value)
+
+
+@pytest.mark.parametrize("input_value", [100, 1.5, True, ["A100"], ("A100", 2)])
+def test_acc_spec_rejects_unsupported_input_types(input_value):
+    with pytest.raises((pydantic.ValidationError, TypeError)):
+        AcceleratorSpec.model_validate(input_value)
+
+
+def test_acc_spec_validate_assignment():
+    spec = AcceleratorSpec(accelerator=Accelerator.A100, count=1)
+    spec.count = 4
+    assert spec.count == 4
+    with pytest.raises(pydantic.ValidationError):
+        spec.count = -1
+    with pytest.raises(pydantic.ValidationError):
+        spec.accelerator = "NOT_A_GPU"
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        (AcceleratorSpec(), None),
+        (AcceleratorSpec(accelerator=None, count=3), None),
+        (AcceleratorSpec(accelerator=Accelerator.A100, count=0), None),
+        (AcceleratorSpec(accelerator=Accelerator.A100, count=1), "A100"),
+        (AcceleratorSpec(accelerator=Accelerator.A100, count=2), "A100:2"),
+        (AcceleratorSpec(accelerator=Accelerator.H100_40GB, count=8), "H100_40GB:8"),
+    ],
+)
+def test_acc_spec_serialization(spec, expected):
+    assert spec.model_dump() == expected
+
+
+@pytest.mark.parametrize(
+    "input_str", ["T4", "A10G:4", "H100:8", "RTX_PRO_6000", "GB300:4"]
+)
+def test_acc_spec_str_round_trip(input_str):
+    spec = AcceleratorSpec.model_validate(input_str)
+    assert spec.model_dump() == input_str
+    assert AcceleratorSpec.model_validate(spec.model_dump()) == spec
+
+
+@pytest.mark.parametrize(
+    "yaml_snippet, expected_acc, expected_use_gpu",
+    [
+        ("accelerator: A100:2", "A100:2", True),
+        ("accelerator: 'A100:2'", "A100:2", True),
+        ("accelerator: T4", "T4", True),
+        ("accelerator:", None, False),
+        ("accelerator: ~", None, False),
+        ("accelerator: null", None, False),
+        ("", None, False),
+    ],
+)
+def test_resources_accelerator_from_yaml(yaml_snippet, expected_acc, expected_use_gpu):
+    data = yaml.safe_load(yaml_snippet) or {}
+    resources = Resources.model_validate(data)
+    assert resources.use_gpu is expected_use_gpu
+    assert resources.model_dump()["accelerator"] == expected_acc
+
+
+def test_resources_accelerator_from_yaml_invalid():
+    with pytest.raises(pydantic.ValidationError, match="Unsupported accelerator type"):
+        Resources.model_validate(yaml.safe_load("accelerator: A100_80GB:2"))
+    with pytest.raises(pydantic.ValidationError, match="Invalid count"):
+        Resources.model_validate(yaml.safe_load("accelerator: A100:0"))
+
+
+@pytest.mark.parametrize(
     "input_dict, expect_base_image, output_dict",
     [
         (
