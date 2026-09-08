@@ -48,10 +48,18 @@ class TrainingPollerMixin:
                 self._update_from_current_status()
                 status.update(self._starting_status_message())
 
+    def _job_identifier(self) -> str:
+        return f"(job {self.job_id}, project {self.project_id})"
+
     def _starting_status_message(self) -> str:
         if self._current_status.status in JOB_PENDING_STATES:
-            return "Waiting for GPU capacity (job is queued)..."
-        return f"Waiting for job to deploy, currently {self._current_status.status}..."
+            return (
+                f"Waiting for GPU capacity (job is queued)... {self._job_identifier()}"
+            )
+        return (
+            f"Waiting for job to deploy, currently {self._current_status.status}... "
+            f"{self._job_identifier()}"
+        )
 
     def post_poll(self) -> None:
         self._update_from_current_status()
@@ -83,14 +91,21 @@ class TrainingPollerMixin:
         ):
             console.print(self._current_status.error_message, style="red")
 
+        identifier = self._job_identifier()
         if self._current_status.status == "TRAINING_JOB_COMPLETED":
-            console.print("Training job completed successfully.", style="green")
+            console.print(
+                f"Training job completed successfully. {identifier}", style="green"
+            )
         elif self._current_status.status == "TRAINING_JOB_FAILED":
-            console.print("Training job failed during execution.", style="red")
+            console.print(
+                f"Training job failed during execution. {identifier}", style="red"
+            )
         elif self._current_status.status == "TRAINING_JOB_STOPPED":
-            console.print("Training job stopped by user.", style="yellow")
+            console.print(f"Training job stopped by user. {identifier}", style="yellow")
         elif self._current_status.status == "TRAINING_JOB_DEPLOY_FAILED":
-            console.print("Training job failed during deployment.", style="red")
+            console.print(
+                f"Training job failed during deployment. {identifier}", style="red"
+            )
 
     def _update_from_current_status(self) -> None:
         current_job = self.api.get_training_job(self.project_id, self.job_id)

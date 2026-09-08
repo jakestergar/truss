@@ -112,6 +112,35 @@ def test_view_training_details_no_jobs_shows_fallback(capsys):
 
 
 @pytest.mark.parametrize(
+    "status,expected_sentence",
+    [
+        ("TRAINING_JOB_COMPLETED", "Training job completed successfully"),
+        ("TRAINING_JOB_FAILED", "Training job failed during execution"),
+        ("TRAINING_JOB_STOPPED", "Training job stopped by user"),
+        ("TRAINING_JOB_DEPLOY_FAILED", "Training job failed during deployment"),
+    ],
+)
+def test_after_polling_includes_identifiers(status, expected_sentence, capsys):
+    poller = _make_poller([status])
+    poller._update_from_current_status()
+    poller.after_polling()
+    captured = capsys.readouterr()
+    assert expected_sentence in captured.out
+    assert "job1" in captured.out
+    assert "proj1" in captured.out
+
+
+def test_starting_status_messages_include_identifiers():
+    poller = _make_poller(["TRAINING_JOB_PENDING", "TRAINING_JOB_CREATED"])
+    poller._update_from_current_status()
+    assert "job1" in poller._starting_status_message()
+    assert "proj1" in poller._starting_status_message()
+    poller._update_from_current_status()
+    assert "job1" in poller._starting_status_message()
+    assert "proj1" in poller._starting_status_message()
+
+
+@pytest.mark.parametrize(
     "status,expected_fragment",
     [("TRAINING_JOB_PENDING", "pending"), ("TRAINING_JOB_QUEUED", "queued")],
 )
