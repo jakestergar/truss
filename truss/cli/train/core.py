@@ -521,8 +521,8 @@ def download_training_job_data(
         )
 
     if unzip:
-        with tempfile.NamedTemporaryFile() as temp_file:
-            temp_path = Path(temp_file.name)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir) / file_name
             temp_path.write_bytes(content)
 
             unzip_dir = output_dir / artifact_base_name
