@@ -40,6 +40,23 @@ class PresignedUrlDownloadError(requests.exceptions.HTTPError):
     pass
 
 
+def _is_incomplete_download_response(response: requests.Response) -> bool:
+    expected_length = response.headers.get("Content-Length")
+    if expected_length is None or "Content-Encoding" in response.headers:
+        return False
+    try:
+        return int(expected_length) != len(response.content)
+    except ValueError:
+        return True
+
+
+def _is_retryable_download_response(response: requests.Response) -> bool:
+    return (
+        response.status_code in _RETRYABLE_DOWNLOAD_STATUS_CODES
+        or _is_incomplete_download_response(response)
+    )
+
+
 class ChainAWSCredential(SafeModel):
     aws_access_key_id: str
     aws_secret_access_key: str
@@ -1126,10 +1143,7 @@ class BasetenApi:
             stop=stop_after_attempt(PRESIGNED_URL_DOWNLOAD_ATTEMPTS),
             wait=wait_exponential(multiplier=1, min=1, max=16),
             retry=(
-                retry_if_result(
-                    lambda response: response.status_code
-                    in _RETRYABLE_DOWNLOAD_STATUS_CODES
-                )
+                retry_if_result(_is_retryable_download_response)
                 | retry_if_exception_type(_RETRYABLE_DOWNLOAD_EXCEPTIONS)
             ),
         )
@@ -1146,12 +1160,8 @@ class BasetenApi:
                 f"{response.text[:500]}"
             )
 
-        expected_length = response.headers.get("Content-Length")
-        if (
-            expected_length is not None
-            and "Content-Encoding" not in response.headers
-            and int(expected_length) != len(response.content)
-        ):
+        if _is_incomplete_download_response(response):
+            expected_length = response.headers["Content-Length"]
             raise PresignedUrlDownloadError(
                 f"Artifact download was incomplete: expected {expected_length} bytes, "
                 f"received {len(response.content)}."

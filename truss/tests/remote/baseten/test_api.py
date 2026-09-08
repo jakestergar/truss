@@ -917,13 +917,36 @@ def test_get_from_presigned_url_does_not_retry_client_error(baseten_api):
     mock_get.assert_called_once()
 
 
-def test_get_from_presigned_url_rejects_incomplete_response(baseten_api):
-    response = _download_response(
+def test_get_from_presigned_url_retries_incomplete_response(baseten_api):
+    incomplete_response = _download_response(
         200, b"artifact-bytes", content_length=len(b"artifact-bytes") + 1
     )
+    mock_get = mock.Mock(
+        side_effect=[
+            incomplete_response,
+            _download_response(200, b"complete-artifact-bytes"),
+        ]
+    )
 
-    with mock.patch("requests.get", return_value=response):
+    with mock.patch("requests.get", mock_get), mock.patch("tenacity.nap.time.sleep"):
+        content = baseten_api.get_from_presigned_url(
+            "https://s3.amazonaws.com/bucket/job-artifacts.tgz"
+        )
+
+    assert content == b"complete-artifact-bytes"
+    assert mock_get.call_count == 2
+
+
+def test_get_from_presigned_url_rejects_repeated_incomplete_responses(baseten_api):
+    incomplete_response = _download_response(
+        200, b"artifact-bytes", content_length=len(b"artifact-bytes") + 1
+    )
+    mock_get = mock.Mock(return_value=incomplete_response)
+
+    with mock.patch("requests.get", mock_get), mock.patch("tenacity.nap.time.sleep"):
         with pytest.raises(requests.exceptions.HTTPError, match="incomplete"):
             baseten_api.get_from_presigned_url(
                 "https://s3.amazonaws.com/bucket/job-artifacts.tgz"
             )
+
+    assert mock_get.call_count == 5
