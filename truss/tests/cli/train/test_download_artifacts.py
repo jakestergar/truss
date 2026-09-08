@@ -1,7 +1,9 @@
 import io
 import json
 import os
+import sys
 import tarfile
+import tempfile
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -54,6 +56,40 @@ def _file_member(name: str, data: bytes = b"hello") -> tuple:
     info = tarfile.TarInfo(name=name)
     info.size = len(data)
     return info, data
+
+
+def _default_extraction_filter_blocks_traversal() -> bool:
+    """Whether this Python's default `extractall` filter rejects `../` members.
+
+    The default is "fully_trusted" (i.e. no protection) on the Pythons this repo
+    currently supports; it is scheduled to become "data" in a future release, at
+    which point the traversal tests below no longer apply.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        dest = Path(tmp_dir) / "dest"
+        dest.mkdir()
+        buf = io.BytesIO(_tarball([_file_member("../probe.txt", b"probe")]))
+        try:
+            with tarfile.open(fileobj=buf, mode="r:*") as tar:
+                tar.extractall(path=dest)
+        except Exception:
+            return True
+        return not (Path(tmp_dir) / "probe.txt").exists()
+
+
+# The production code calls `temp_path.write_bytes(...)` while an unclosed
+# `tempfile.NamedTemporaryFile` still holds the file open, which is a
+# PermissionError on Windows (see BUG note in the PR description): the whole
+# `--unzip` code path is unusable there, so these tests only run on POSIX.
+skip_unzip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="download_training_job_data(unzip=True) raises PermissionError on Windows",
+)
+
+skip_if_tar_filtered = pytest.mark.skipif(
+    _default_extraction_filter_blocks_traversal(),
+    reason="this Python's default tar extraction filter already blocks traversal",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +195,7 @@ def test_download_no_unzip_target_directory_containing_space_is_mangled(tmp_path
 # ---------------------------------------------------------------------------
 
 
+@skip_unzip_on_windows
 def test_download_unzip_happy_path(tmp_path):
     content = _tarball([_file_member("model/weights.bin", b"weights")])
     remote = _make_remote(content=content, job=_make_job("proj"))
@@ -169,6 +206,7 @@ def test_download_unzip_happy_path(tmp_path):
     assert (result / "model" / "weights.bin").read_bytes() == b"weights"
 
 
+@skip_unzip_on_windows
 def test_download_unzip_spaces_in_project_name_become_dashes(tmp_path):
     content = _tarball([_file_member("a.txt")])
     remote = _make_remote(content=content, job=_make_job("my cool project"))
@@ -179,6 +217,7 @@ def test_download_unzip_spaces_in_project_name_become_dashes(tmp_path):
     assert (result / "a.txt").exists()
 
 
+@skip_unzip_on_windows
 def test_download_unzip_existing_directory_raises(tmp_path):
     content = _tarball([_file_member("a.txt")])
     remote = _make_remote(content=content, job=_make_job("proj"))
@@ -190,6 +229,7 @@ def test_download_unzip_existing_directory_raises(tmp_path):
     assert "already exists" in str(exc_info.value)
 
 
+@skip_unzip_on_windows
 def test_download_unzip_invalid_tarball_raises_raw_read_error(tmp_path):
     """BUG (usability): a non-tarball payload surfaces a bare `tarfile.ReadError`.
 
@@ -221,6 +261,8 @@ def test_download_unzip_invalid_tarball_raises_raw_read_error(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@skip_unzip_on_windows
+@skip_if_tar_filtered
 def test_download_unzip_relative_path_traversal_escapes_target_dir(tmp_path):
     """SECURITY BUG: `tar.extractall(path=unzip_dir)` is called with no `filter=`.
 
@@ -242,6 +284,8 @@ def test_download_unzip_relative_path_traversal_escapes_target_dir(tmp_path):
     assert not (result / "pwned.txt").exists()
 
 
+@skip_unzip_on_windows
+@skip_if_tar_filtered
 def test_download_unzip_traversal_overwrites_existing_file(tmp_path):
     """SECURITY BUG: traversal can clobber pre-existing user files."""
     content = _tarball([_file_member("../../victim.txt", b"malicious")])
@@ -255,6 +299,8 @@ def test_download_unzip_traversal_overwrites_existing_file(tmp_path):
     assert victim.read_bytes() == b"malicious"
 
 
+@skip_unzip_on_windows
+@skip_if_tar_filtered
 def test_download_unzip_absolute_member_path(tmp_path):
     """Absolute member paths: record what actually lands on disk."""
     absolute_target = tmp_path / "abs_target.txt"
@@ -269,6 +315,8 @@ def test_download_unzip_absolute_member_path(tmp_path):
     assert not any(result.rglob("abs_target.txt"))
 
 
+@skip_unzip_on_windows
+@skip_if_tar_filtered
 def test_download_unzip_symlink_member_escapes(tmp_path):
     """SECURITY BUG: symlink members are extracted verbatim.
 
@@ -334,6 +382,7 @@ def test_project_name_with_leading_dash_no_unzip(tmp_path):
     assert result.exists()
 
 
+@skip_unzip_on_windows
 def test_project_name_with_slash_unzip_creates_directory_outside_target(tmp_path):
     content = _tarball([_file_member("a.txt", b"data")])
     remote = _make_remote(content=content, job=_make_job("../evil"))
