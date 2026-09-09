@@ -1,150 +1,125 @@
-import json
+import enum
+import logging
 
+import pydantic
 import pytest
 
-from truss_chains import private_types, public_types
-from truss_chains.remote_chainlet.utils import (
-    load_dynamic_chainlet_config,
-    populate_chainlet_service_predict_urls,
+from truss_chains import public_types
+from truss_chains.utils import (
+    InjectedError,
+    StrEnum,
+    expect_one,
+    get_pydantic_field_default_value,
+    issubclass_safe,
+    log_level,
+    make_abs_path_here,
+    make_optional_import_error,
+    random_fail,
+    setup_dev_logging,
 )
 
-DYNAMIC_CHAINLET_CONFIG_VALUE = {
-    "Hello World!": {
-        "predict_url": "https://chain-232p81ql.api.baseten.co/environments/production/run_remote"
-    }
-}
 
-DYNAMIC_CHAINLET_CONFIG_WITH_INTERNAL_URL = {
-    "Hello World!": {
-        "predict_url": "https://chain-232p81ql.api.baseten.co/environments/production/run_remote",
-        "internal_url": {
-            "gateway_run_remote_url": "https://aws-us-west-2-ai7.api.baseten.co/environments/production/run_remote",
-            "hostname": "chain-232p81ql.api.baseten.co",
-        },
-    }
-}
-
-DYNAMIC_CHAINLET_CONFIG_INTERNAL_ONLY = {
-    "InternalOnly": {
-        "internal_url": {
-            "gateway_run_remote_url": "https://aws-us-west-2-ai7.api.baseten.co/environments/production/run_remote",
-            "hostname": "chain-232p81ql.api.baseten.co",
-        }
-    }
-}
+def test_make_abs_path_here(tmp_path):
+    existing = tmp_path / "existing"
+    existing.write_text("ok")
+    result = make_abs_path_here(str(existing))
+    assert result.abs_path == str(existing)
 
 
-@pytest.fixture
-def dynamic_config_mount_dir(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    # ``utils.load_dynamic_chainlet_config`` is ``lru_cache``-decorated;
-    # invalidate so monkeypatched paths/contents take effect.
-    load_dynamic_chainlet_config.cache_clear()
-    monkeypatch.setattr(
-        "truss.templates.shared.dynamic_config_resolver.DYNAMIC_CONFIG_MOUNT_DIR",
-        str(tmp_path),
-    )
-    yield
-    load_dynamic_chainlet_config.cache_clear()
+def test_setup_dev_logging_with_handlers():
+    logger = logging.getLogger()
+    original = list(logger.handlers)
+    handler = logging.StreamHandler()
+    logger.handlers = [handler]
+    setup_dev_logging(logging.DEBUG)
+    assert logger.level == logging.DEBUG
+    assert logger.handlers == [handler]
+    assert handler.formatter is not None
+    logger.handlers = original
 
 
-def test_populate_chainlet_service_predict_urls_empty_input(dynamic_config_mount_dir):
-    assert populate_chainlet_service_predict_urls({}) == {}
+def test_setup_dev_logging_without_handlers():
+    logger = logging.getLogger()
+    original = list(logger.handlers)
+    logger.handlers = []
+    setup_dev_logging()
+    assert logger.handlers
+    logger.handlers = original
 
 
-def test_populate_chainlet_service_predict_urls(tmp_path, dynamic_config_mount_dir):
-    with (tmp_path / private_types.DYNAMIC_CHAINLET_CONFIG_KEY).open("w") as f:
-        f.write(json.dumps(DYNAMIC_CHAINLET_CONFIG_VALUE))
-
-    chainlet_to_service = {
-        "HelloWorld": private_types.ServiceDescriptor(
-            name="HelloWorld",
-            display_name="Hello World!",
-            options=public_types.RPCOptions(),
-        )
-    }
-    new_chainlet_to_service = populate_chainlet_service_predict_urls(
-        chainlet_to_service
-    )
-
-    assert (
-        new_chainlet_to_service["HelloWorld"].predict_url
-        == DYNAMIC_CHAINLET_CONFIG_VALUE["Hello World!"]["predict_url"]
-    )
-    assert new_chainlet_to_service["HelloWorld"].internal_url is None
+def test_log_level_context():
+    logger = logging.getLogger()
+    original = logger.level
+    logger.setLevel(logging.INFO)
+    with log_level(logging.DEBUG):
+        assert logger.level == logging.DEBUG
+    assert logger.level == logging.INFO
+    logger.setLevel(original)
 
 
-@pytest.mark.parametrize("config", [DYNAMIC_CHAINLET_CONFIG_VALUE, {}, ""])
-def test_no_populate_chainlet_service_predict_urls(
-    config, tmp_path, dynamic_config_mount_dir
-):
-    with (tmp_path / private_types.DYNAMIC_CHAINLET_CONFIG_KEY).open("w") as f:
-        f.write(json.dumps(config))
-
-    chainlet_to_service = {
-        "RandInt": private_types.ServiceDescriptor(
-            name="RandInt", display_name="RandInt", options=public_types.RPCOptions()
-        )
-    }
-
-    with pytest.raises(
-        public_types.MissingDependencyError, match="Chainlet 'RandInt' not found"
-    ):
-        populate_chainlet_service_predict_urls(chainlet_to_service)
+def test_expect_one_single():
+    assert expect_one([42]) == 42
 
 
-def test_populate_chainlet_service_with_internal_url(
-    tmp_path, dynamic_config_mount_dir
-):
-    """Test that internal_url is correctly parsed when present."""
-    with (tmp_path / private_types.DYNAMIC_CHAINLET_CONFIG_KEY).open("w") as f:
-        f.write(json.dumps(DYNAMIC_CHAINLET_CONFIG_WITH_INTERNAL_URL))
-
-    chainlet_to_service = {
-        "HelloWorld": private_types.ServiceDescriptor(
-            name="HelloWorld",
-            display_name="Hello World!",
-            options=public_types.RPCOptions(),
-        )
-    }
-
-    new_chainlet_to_service = populate_chainlet_service_predict_urls(
-        chainlet_to_service
-    )
-
-    assert new_chainlet_to_service["HelloWorld"].predict_url is None
-    assert (
-        new_chainlet_to_service["HelloWorld"].internal_url.gateway_run_remote_url
-        == "https://aws-us-west-2-ai7.api.baseten.co/environments/production/run_remote"
-    )
-    assert (
-        new_chainlet_to_service["HelloWorld"].internal_url.hostname
-        == "chain-232p81ql.api.baseten.co"
-    )
+def test_expect_one_empty():
+    with pytest.raises(ValueError, match="empty"):
+        expect_one([])
 
 
-def test_populate_chainlet_service_internal_only(tmp_path, dynamic_config_mount_dir):
-    """Test case where only internal_url is provided (no predict_url)."""
-    with (tmp_path / private_types.DYNAMIC_CHAINLET_CONFIG_KEY).open("w") as f:
-        f.write(json.dumps(DYNAMIC_CHAINLET_CONFIG_INTERNAL_ONLY))
+def test_expect_one_multiple():
+    with pytest.raises(ValueError, match="more than one"):
+        expect_one([1, 2])
 
-    chainlet_to_service = {
-        "InternalService": private_types.ServiceDescriptor(
-            name="InternalService",
-            display_name="InternalOnly",
-            options=public_types.RPCOptions(),
-        )
-    }
 
-    new_chainlet_to_service = populate_chainlet_service_predict_urls(
-        chainlet_to_service
-    )
+def test_random_fail_certain():
+    with pytest.raises(InjectedError, match="boom"):
+        random_fail(1.0, "boom")
 
-    assert new_chainlet_to_service["InternalService"].predict_url is None
-    assert (
-        new_chainlet_to_service["InternalService"].internal_url.gateway_run_remote_url
-        == "https://aws-us-west-2-ai7.api.baseten.co/environments/production/run_remote"
-    )
-    assert (
-        new_chainlet_to_service["InternalService"].internal_url.hostname
-        == "chain-232p81ql.api.baseten.co"
-    )
+
+def test_random_fail_never():
+    random_fail(0.0, "boom")
+
+
+def test_str_enum_auto():
+    class Color(StrEnum):
+        RED = enum.auto()
+        BLUE = enum.auto()
+
+    assert Color.RED == "RED"
+    assert Color("RED") == Color.RED
+
+
+def test_str_enum_invalid_value():
+    with pytest.raises(TypeError):
+
+        class Bad(StrEnum):
+            ONE = 1
+
+
+def test_str_enum_lowercase_rejected():
+    with pytest.raises(ValueError):
+
+        class Bad(StrEnum):
+            lower = enum.auto()
+
+
+def test_issubclass_safe():
+    assert issubclass_safe(int, object) is True
+    assert issubclass_safe(1, object) is False
+
+
+def test_get_pydantic_field_default_value():
+    class M(pydantic.BaseModel):
+        a: int = 1
+        b: list = pydantic.Field(default_factory=list)
+        c: str
+
+    assert get_pydantic_field_default_value(M, "a") == 1
+    assert get_pydantic_field_default_value(M, "b") == []
+    assert get_pydantic_field_default_value(M, "c") is None
+
+
+def test_make_optional_import_error():
+    err = make_optional_import_error("some_module")
+    assert isinstance(err, public_types.ChainsRuntimeError)
+    assert "some_module" in str(err)
