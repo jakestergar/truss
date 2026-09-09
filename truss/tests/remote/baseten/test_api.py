@@ -837,3 +837,107 @@ def test_deactivate_loops_run_posts_run_deactivate_endpoint(baseten_api):
     assert mock_rest_client.post.call_args[0][0] == "v1/loops/runs/run-1/deactivate"
     assert mock_rest_client.post.call_args[1]["body"] == {}
     mock_rest_client.get.assert_not_called()
+
+
+_S3_INTERNAL_ERROR_XML = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n'
+    b"<Error><Code>InternalError</Code>"
+    b"<Message>We encountered an internal error. Please try again.</Message>"
+    b"</Error>"
+)
+
+
+def _presigned_response(status_code: int, content: bytes) -> Response:
+    response = Response()
+    response.status_code = status_code
+    response._content = content
+    response.url = "https://s3.example.com/artifact.tgz"
+    response.headers["Content-Length"] = str(len(content))
+    return response
+
+
+@mock.patch("time.sleep")
+@mock.patch("requests.get")
+def test_get_from_presigned_url_raises_on_s3_error_body(
+    mock_get, _mock_sleep, baseten_api
+):
+    mock_get.return_value = _presigned_response(500, _S3_INTERNAL_ERROR_XML)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        baseten_api.get_from_presigned_url("https://s3.example.com/artifact.tgz")
+
+
+@mock.patch("time.sleep")
+@mock.patch("requests.get")
+def test_get_from_presigned_url_retries_transient_5xx_then_succeeds(
+    mock_get, _mock_sleep, baseten_api
+):
+    mock_get.side_effect = [
+        _presigned_response(500, _S3_INTERNAL_ERROR_XML),
+        _presigned_response(503, b"<Error><Code>SlowDown</Code></Error>"),
+        _presigned_response(200, b"real tarball bytes"),
+    ]
+
+    result = baseten_api.get_from_presigned_url("https://s3.example.com/artifact.tgz")
+
+    assert result == b"real tarball bytes"
+    assert mock_get.call_count == 3
+
+
+@mock.patch("time.sleep")
+@mock.patch("requests.get")
+def test_get_from_presigned_url_retries_connection_reset_then_succeeds(
+    mock_get, _mock_sleep, baseten_api
+):
+    mock_get.side_effect = [
+        requests.exceptions.ConnectionError("Connection reset by peer"),
+        _presigned_response(200, b"real tarball bytes"),
+    ]
+
+    result = baseten_api.get_from_presigned_url("https://s3.example.com/artifact.tgz")
+
+    assert result == b"real tarball bytes"
+    assert mock_get.call_count == 2
+
+
+@mock.patch("time.sleep")
+@mock.patch("requests.get")
+def test_get_from_presigned_url_gives_up_after_max_attempts(
+    mock_get, _mock_sleep, baseten_api
+):
+    mock_get.side_effect = requests.exceptions.ConnectionError(
+        "Connection reset by peer"
+    )
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        baseten_api.get_from_presigned_url("https://s3.example.com/artifact.tgz")
+
+    assert mock_get.call_count == 5
+
+
+@mock.patch("time.sleep")
+@mock.patch("requests.get")
+def test_get_from_presigned_url_does_not_retry_4xx(mock_get, _mock_sleep, baseten_api):
+    mock_get.return_value = _presigned_response(
+        403, b"<Error><Code>AccessDenied</Code></Error>"
+    )
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        baseten_api.get_from_presigned_url("https://s3.example.com/artifact.tgz")
+
+    assert mock_get.call_count == 1
+
+
+@mock.patch("time.sleep")
+@mock.patch("requests.get")
+def test_get_from_presigned_url_rejects_truncated_body(
+    mock_get, _mock_sleep, baseten_api
+):
+    truncated = _presigned_response(200, b"half of the")
+    truncated.headers["Content-Length"] = "100"
+    mock_get.side_effect = [truncated, _presigned_response(200, b"full body")]
+
+    result = baseten_api.get_from_presigned_url("https://s3.example.com/artifact.tgz")
+
+    assert result == b"full body"
+    assert mock_get.call_count == 2
