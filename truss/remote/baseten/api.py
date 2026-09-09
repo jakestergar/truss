@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import time
 from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -15,6 +16,12 @@ from truss.remote.baseten.error import ApiError
 from truss.remote.baseten.rest_client import RestAPIClient
 from truss.remote.baseten.user_agent import with_user_agent
 from truss.remote.baseten.utils.transfer import base64_encoded_json_str
+
+# Presigned S3/GCS downloads are large, unauthenticated GETs against object
+# storage that intermittently returns 5xx or resets the connection mid-body.
+_PRESIGNED_DOWNLOAD_MAX_ATTEMPTS = 5
+_PRESIGNED_DOWNLOAD_BACKOFF_SEC = 1.0
+_PRESIGNED_DOWNLOAD_TIMEOUT_SEC = (10, 300)
 
 logger = logging.getLogger(__name__)
 PARAMS_INDENT = "\n                    "
@@ -1102,8 +1109,47 @@ class BasetenApi:
         return presigned_url
 
     def get_from_presigned_url(self, presigned_url: str) -> bytes:
-        response = requests.get(presigned_url)
-        return response.content
+        last_error: Optional[Exception] = None
+        for attempt in range(1, _PRESIGNED_DOWNLOAD_MAX_ATTEMPTS + 1):
+            try:
+                response = requests.get(
+                    presigned_url, timeout=_PRESIGNED_DOWNLOAD_TIMEOUT_SEC
+                )
+                if response.status_code >= 500:
+                    raise requests.exceptions.HTTPError(
+                        f"{response.status_code} error downloading artifact: "
+                        f"{response.text[:500]}",
+                        response=response,
+                    )
+                response.raise_for_status()
+                content = response.content
+                expected_len = response.headers.get("Content-Length")
+                if expected_len is not None and len(content) != int(expected_len):
+                    raise requests.exceptions.ChunkedEncodingError(
+                        f"Incomplete download: got {len(content)} of "
+                        f"{expected_len} bytes"
+                    )
+                return content
+            except (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError,
+            ) as e:
+                last_error = e
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code < 500:
+                    raise
+                last_error = e
+            if attempt < _PRESIGNED_DOWNLOAD_MAX_ATTEMPTS:
+                delay = _PRESIGNED_DOWNLOAD_BACKOFF_SEC * 2 ** (attempt - 1)
+                logging.warning(
+                    f"Artifact download attempt {attempt}/"
+                    f"{_PRESIGNED_DOWNLOAD_MAX_ATTEMPTS} failed ({last_error}); "
+                    f"retrying in {delay:.0f}s"
+                )
+                time.sleep(delay)
+        assert last_error is not None
+        raise last_error
 
     def get_deployment_download_url(self, model_id: str, deployment_id: str) -> str:
         response = self._rest_api_client.get(
